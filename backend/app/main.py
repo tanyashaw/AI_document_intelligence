@@ -5,7 +5,7 @@ from app.api.routes.rfp import router as rfp_router
 from app.api.routes.chat import router as chat_router
 
 app = FastAPI(
-    title="RFP Intelligence Agent"
+    title="AI Document Analyser"
 )
 
 import os
