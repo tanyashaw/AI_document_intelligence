@@ -1,11 +1,12 @@
 from uuid import uuid4
 import json
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.vectordb.retriever import retrieve_relevant_chunks
 from app.core.llm import client, GROQ_MODEL
 from app.memory.chat_memory import session_store
+from app.api.deps import get_current_user
 
 router = APIRouter(
     prefix="/chat",
@@ -23,34 +24,34 @@ def _check_owner(session_id: str, user_id: str) -> None:
 
 
 @router.get("/sessions")
-async def get_sessions(x_user_id: str = Header(...)):
-    return {"sessions": session_store.all_sessions(user_id=x_user_id)}
+async def get_sessions(user_id: str = Depends(get_current_user)):
+    return {"sessions": session_store.all_sessions(user_id=user_id)}
 
 
 @router.post("/new-session")
-async def create_new_session(x_user_id: str = Header(...)):
+async def create_new_session(user_id: str = Depends(get_current_user)):
     session_id = str(uuid4())
-    session_store.create_session(session_id, title="New Chat", user_id=x_user_id)
+    session_store.create_session(session_id, title="New Chat", user_id=user_id)
     return {"session_id": session_id}
 
 
 @router.delete("/session/{session_id}")
-async def delete_session(session_id: str, x_user_id: str = Header(...)):
-    _check_owner(session_id, x_user_id)
+async def delete_session(session_id: str, user_id: str = Depends(get_current_user)):
+    _check_owner(session_id, user_id)
     session_store.delete_session(session_id)
     return {"deleted": session_id}
 
 
 @router.patch("/session/{session_id}/rename")
-async def rename_session(session_id: str, title: str, x_user_id: str = Header(...)):
-    _check_owner(session_id, x_user_id)
+async def rename_session(session_id: str, title: str, user_id: str = Depends(get_current_user)):
+    _check_owner(session_id, user_id)
     session_store.set_title(session_id, title)
     return {"session_id": session_id, "title": title}
 
 
 @router.get("/history/{session_id}")
-async def get_chat_history(session_id: str, x_user_id: str = Header(...)):
-    _check_owner(session_id, x_user_id)
+async def get_chat_history(session_id: str, user_id: str = Depends(get_current_user)):
+    _check_owner(session_id, user_id)
     return {
         "session_id": session_id,
         "messages": session_store.get_messages(session_id),
@@ -61,12 +62,12 @@ async def get_chat_history(session_id: str, x_user_id: str = Header(...)):
 
 
 @router.post("/ask")
-async def ask_question(question: str, session_id: str, x_user_id: str = Header(...)):
+async def ask_question(question: str, session_id: str, user_id: str = Depends(get_current_user)):
 
     if session_id not in session_store:
-        session_store.create_session(session_id, user_id=x_user_id)
+        session_store.create_session(session_id, user_id=user_id)
     else:
-        _check_owner(session_id, x_user_id)
+        _check_owner(session_id, user_id)
 
     # ── Document identity ──────────────────────────────────────────────────
     doc_name = session_store.get_doc_name(session_id) or "the uploaded document"

@@ -3,26 +3,40 @@ import ReactMarkdown from "react-markdown";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-// ── Per-browser identity ──────────────────────────────────────
-// Lightweight isolation: not real authentication, just a persistent random
-// ID per browser so one person's sessions don't show up for someone else
-// using the same shared backend. Sent as X-User-Id on every request.
-function getUserId() {
-  const KEY = "rfp_agent_user_id";
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(KEY, id);
-  }
-  return id;
-}
-const USER_ID = getUserId();
+// ── Auth ────────────────────────────────────────────────────────
+// Real authentication: the backend issues a signed JWT on signup/login,
+// which we store and send as `Authorization: Bearer <token>`. The
+// previous scheme (a random UUID sent as X-User-Id) was not authentication
+// at all — anyone could set that header to any value in devtools.
+const TOKEN_KEY = "rfp_agent_token";
 
-function apiFetch(url, options = {}) {
-  return fetch(url, {
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+// Fired whenever a 401 comes back, so the app can drop the user back to
+// the login screen instead of silently failing.
+const AUTH_EVENT = "rfp-agent-auth-expired";
+
+async function apiFetch(url, options = {}) {
+  const token = getToken();
+  const res = await fetch(url, {
     ...options,
-    headers: { ...(options.headers || {}), "X-User-Id": USER_ID },
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
+  if (res.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event(AUTH_EVENT));
+  }
+  return res;
 }
 
 // ── Icons ──────────────────────────────────────────────────
@@ -145,7 +159,7 @@ function generatePDFReport(data, sessionTitle) {
 }
 
 // ── Main App ────────────────────────────────────────────────
-export default function App() {
+function MainApp({ onLogout }) {
   // Upload state
   const [file, setFile] = useState(null);
   const [manualText, setManualText] = useState("");
@@ -490,6 +504,9 @@ export default function App() {
             )}
             <button className="theme-btn" onClick={() => setTheme(isDark ? "light" : "dark")}>
               {isDark ? <I.Sun /> : <I.Moon />}
+            </button>
+            <button className="theme-btn logout-btn" title="Log out" onClick={onLogout}>
+              Log out
             </button>
           </div>
         </header>
@@ -930,6 +947,121 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Auth screen (login / signup) ─────────────────────────────
+function AuthScreen({ onAuthenticated }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      const res = await fetch(`${BASE_URL}/auth/${mode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || "Something went wrong. Please try again.");
+      }
+      setToken(data.access_token);
+      onAuthenticated();
+    } catch (err) {
+      setError(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-screen">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-title">AI Document Analyser</div>
+        <div className="auth-subtitle">
+          {mode === "login" ? "Log in to your account" : "Create an account"}
+        </div>
+
+        <label className="auth-label">Email</label>
+        <input
+          className="auth-input"
+          type="email"
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+
+        <label className="auth-label">Password</label>
+        <input
+          className="auth-input"
+          type="password"
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          minLength={mode === "signup" ? 8 : undefined}
+          required
+        />
+        {mode === "signup" && (
+          <div className="auth-hint">Must be at least 8 characters.</div>
+        )}
+
+        {error && <div className="auth-error">{error}</div>}
+
+        <button className="auth-submit" type="submit" disabled={busy}>
+          {busy ? "Please wait…" : mode === "login" ? "Log in" : "Sign up"}
+        </button>
+
+        <div className="auth-switch">
+          {mode === "login" ? (
+            <>No account?{" "}
+              <button type="button" onClick={() => { setMode("signup"); setError(""); }}>
+                Sign up
+              </button>
+            </>
+          ) : (
+            <>Already have an account?{" "}
+              <button type="button" onClick={() => { setMode("login"); setError(""); }}>
+                Log in
+              </button>
+            </>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ── Auth gate ──────────────────────────────────────────────────
+// Shows the login/signup screen until a valid token exists, then renders
+// the real app. Also listens for 401s from apiFetch so an expired/invalid
+// token drops the user back to the login screen instead of failing silently.
+export default function App() {
+  const [authed, setAuthed] = useState(() => !!getToken());
+
+  useEffect(() => {
+    const onExpired = () => setAuthed(false);
+    window.addEventListener(AUTH_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EVENT, onExpired);
+  }, []);
+
+  const logout = () => {
+    setToken(null);
+    setAuthed(false);
+  };
+
+  return (
+    <>
+      <style>{CSS}</style>
+      {authed ? <MainApp onLogout={logout} /> : <AuthScreen onAuthenticated={() => setAuthed(true)} />}
+    </>
   );
 }
 
@@ -1493,5 +1625,105 @@ const CSS = `
   background: var(--bg);
   border-radius: var(--rsm);
   border-left: 3px solid var(--border);
+}
+.logout-btn {
+  width: auto !important;
+  padding: 0 14px !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+.auth-screen {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  font-family: var(--font-body);
+  padding: 20px;
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--sh-md);
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+}
+.auth-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: center;
+}
+.auth-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 6px 0 22px 0;
+}
+.auth-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 12px 0 6px 0;
+}
+.auth-input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 1px solid var(--inp-b);
+  background: var(--inp-bg);
+  color: var(--text-primary);
+  border-radius: var(--rsm);
+  font-family: var(--font-body);
+}
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.auth-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.auth-error {
+  font-size: 13px;
+  color: #ef4444;
+  margin-top: 14px;
+  text-align: center;
+}
+.auth-submit {
+  margin-top: 22px;
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--rsm);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-submit:hover { background: var(--accent-h); }
+.auth-submit:disabled { opacity: 0.6; cursor: default; }
+.auth-switch {
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.auth-switch button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
 }
 `;

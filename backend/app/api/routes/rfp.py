@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Header
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -15,6 +15,7 @@ from app.graph.workflow import app_graph
 
 from app.vectordb.store import store_chunks
 from app.memory.chat_memory import session_store
+from app.api.deps import get_current_user
 
 router = APIRouter(
     prefix="/rfp",
@@ -130,9 +131,9 @@ def process_rfp_text(text: str, session_id: str) -> tuple[dict, dict]:
 async def upload_rfp(
     file: UploadFile = File(...),
     session_id: Optional[str] = None,
-    x_user_id: str = Header(...),
+    user_id: str = Depends(get_current_user),
 ):
-    session_id = _ensure_session(session_id, x_user_id)
+    session_id = _ensure_session(session_id, user_id)
 
     file_path = UPLOAD_DIR / file.filename
 
@@ -152,8 +153,8 @@ async def upload_rfp(
 
 
 @router.post("/analyze-text")
-async def process_text_rfp(request: TextRFPRequest, x_user_id: str = Header(...)):
-    session_id = _ensure_session(request.session_id, x_user_id)
+async def process_text_rfp(request: TextRFPRequest, user_id: str = Depends(get_current_user)):
+    session_id = _ensure_session(request.session_id, user_id)
 
     meta, workflow_result = process_rfp_text(request.text, session_id=session_id)
 
@@ -166,8 +167,9 @@ async def process_text_rfp(request: TextRFPRequest, x_user_id: str = Header(...)
 
 
 @router.get("/download/{filename}")
-async def download_file(filename: str):
-    """Serve the originally uploaded file as a download attachment."""
+async def download_file(filename: str, user_id: str = Depends(get_current_user)):
+    """Serve the originally uploaded file as a download attachment.
+    Requires login (previously unauthenticated)."""
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File '{filename}' not found.")
