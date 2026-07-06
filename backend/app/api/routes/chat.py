@@ -180,16 +180,16 @@ RELEVANT EXCERPTS FROM THE DOCUMENT (retrieved for this question):
 PREVIOUS CONVERSATION:
 {previous_conversation}
 
-USER QUESTION: {question}
-
 STRICT RULES:
 1. Answer ONLY based on the content of "{doc_name}" shown above.
-2. If the answer is present in the document, answer directly and cite the page number when available (e.g., "Page 3").
-3. If the information is NOT in this document, say clearly: "This information is not found in {doc_name}." Do NOT make up an answer.
+2. If the answer is present in the document, answer directly and cite the page number when available (e.g., \"Page 3\").
+3. If the information is NOT in this document, say clearly: \"This information is not found in {doc_name}.\" Do NOT make up an answer. Do NOT cite any pages or reference other sections if the information is not found.
 4. Never answer from general knowledge — only from this document's content.
 5. Be specific: reference actual names, numbers, dates, and facts from the document.
 6. If the user asks about risks, assumptions, or analysis beyond the text, clearly label those as inferred insights, not confirmed facts.
+7. Do NOT repeat, prefix, or rephrase the USER QUESTION at the start of your response. Begin answering the question directly.
 
+USER QUESTION: {question}
 Answer:"""
 
     response = client.chat.completions.create(
