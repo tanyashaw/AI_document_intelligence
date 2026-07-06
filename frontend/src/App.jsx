@@ -221,7 +221,7 @@ function generatePDFReport(data, sessionTitle) {
 }
 
 // ── Main App ────────────────────────────────────────────────
-function MainApp({ onLogout }) {
+function MainApp({ onLogout, theme, setTheme }) {
   // Upload state
   const [file, setFile] = useState(null);
   // Name of the originally-analyzed document, kept separate from `file`
@@ -250,7 +250,6 @@ function MainApp({ onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [toast, setToast] = useState(null);
-  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
 
   // Session management
   const [ctxMenu, setCtxMenu] = useState(null);
@@ -263,12 +262,6 @@ function MainApp({ onLogout }) {
   const renameRef = useRef(null);
   const fileRef = useRef(null);
   const isDark = theme === "dark";
-
-  useEffect(() => {
-    localStorage.setItem("theme", theme);
-    document.documentElement.setAttribute("data-theme", theme);
-    document.body.style.cssText = `background:${isDark ? "#0d0d10" : "#f0ede6"};color:${isDark ? "#f2ede8" : "#1a1512"};margin:0;padding:0;`;
-  }, [theme, isDark]);
 
   const toast$ = useCallback((message, type = "error") => {
     setToast({ message, type });
@@ -1069,12 +1062,13 @@ function MainApp({ onLogout }) {
 }
 
 // ── Auth screen (login / signup) ─────────────────────────────
-function AuthScreen({ onAuthenticated }) {
+function AuthScreen({ onAuthenticated, theme, setTheme }) {
   const [mode, setMode] = useState("login"); // "login" | "signup"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const isDark = theme === "dark";
 
   const submit = async (e) => {
     e.preventDefault();
@@ -1100,7 +1094,15 @@ function AuthScreen({ onAuthenticated }) {
   };
 
   return (
-    <div className="auth-screen">
+    <div className={cx("auth-screen", isDark && "dark")}>
+      <button
+        type="button"
+        className="theme-btn auth-theme-btn"
+        onClick={() => setTheme(isDark ? "light" : "dark")}
+        title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      >
+        {isDark ? <I.Sun /> : <I.Moon />}
+      </button>
       <form className="auth-card" onSubmit={submit}>
         <div className="auth-title">AI Document Intelligence</div>
         <div className="auth-subtitle">
@@ -1163,12 +1165,22 @@ function AuthScreen({ onAuthenticated }) {
 // token drops the user back to the login screen instead of failing silently.
 export default function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
+  // Theme lives here (not inside MainApp) so it's already applied — and
+  // toggleable — on the login/signup screen too, before the user is authed.
+  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
+  const isDark = theme === "dark";
 
   useEffect(() => {
     const onExpired = () => setAuthed(false);
     window.addEventListener(AUTH_EVENT, onExpired);
     return () => window.removeEventListener(AUTH_EVENT, onExpired);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+    document.body.style.cssText = `background:${isDark ? "#0d0d10" : "#f0ede6"};color:${isDark ? "#f2ede8" : "#1a1512"};margin:0;padding:0;`;
+  }, [theme, isDark]);
 
   const logout = () => {
     setToken(null);
@@ -1178,7 +1190,10 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
-      {authed ? <MainApp onLogout={logout} /> : <AuthScreen onAuthenticated={() => setAuthed(true)} />}
+      {authed
+        ? <MainApp onLogout={logout} theme={theme} setTheme={setTheme} />
+        : <AuthScreen onAuthenticated={() => setAuthed(true)} theme={theme} setTheme={setTheme} />
+      }
     </>
   );
 }
@@ -1796,6 +1811,13 @@ const CSS = `
   background: var(--bg);
   font-family: var(--font-body);
   padding: 20px;
+  position: relative;
+  transition: background .3s;
+}
+.auth-theme-btn {
+  position: absolute;
+  top: 20px;
+  right: 20px;
 }
 .auth-card {
   width: 100%;
