@@ -1,13 +1,8 @@
 """
 WHY THIS CHANGE:
-`fitz` (PyMuPDF), `pytesseract`, and `PIL` were previously imported at
-module scope, meaning they were loaded into memory the instant this module
-was imported — which happens at app startup (main.py -> rfp.py ->
-pdf_parser.py), even before any file is ever uploaded. These imports are
-moved inside the functions that use them, so their memory cost is only
-paid on the first actual PDF upload / OCR call, not at server boot. This
-also means the app can start (and pass Render's health check) even if
-tesseract's system binary isn't available yet, since the import is deferred.
+`fitz` (PyMuPDF), `easyocr`, and `PIL` are imported inside their respective functions/helpers
+so their memory cost is only paid on the first actual PDF upload / OCR call, not at server boot.
+This ensures fast application startup and avoids loading heavy deep learning models unnecessarily.
 """
 
 # A page with fewer real characters than this is treated as "no usable
@@ -17,26 +12,47 @@ _MIN_TEXT_CHARS = 20
 # Render pages at this zoom before OCR — higher = better accuracy, slower.
 _OCR_ZOOM = 2.0
 
+# Global cache for the EasyOCR Reader instance to avoid re-loading model weights on every page.
+_EASYOCR_READER = None
+
+
+def _get_easyocr_reader():
+    """Lazily initialize and cache the EasyOCR Reader."""
+    global _EASYOCR_READER
+    if _EASYOCR_READER is None:
+        import easyocr
+        _EASYOCR_READER = easyocr.Reader(["en"])
+    return _EASYOCR_READER
+
 
 def _ocr_page(page) -> str:
-    """Render a PDF page to an image and run OCR on it. Returns '' on any failure
-    (missing Tesseract binary, corrupt page, etc.) rather than raising, so a single
-    bad/scanned page never takes down the whole upload."""
+    """Render a PDF page to an image and run OCR on it using EasyOCR.
+    Returns '' on any failure rather than raising, so a single bad/scanned
+    page never takes down the whole upload."""
     try:
         import io
+        import numpy as np
         import fitz  # PyMuPDF
-        import pytesseract
         from PIL import Image
 
+        # Render page to image
         matrix = fitz.Matrix(_OCR_ZOOM, _OCR_ZOOM)
         pix = page.get_pixmap(matrix=matrix)
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        return pytesseract.image_to_string(img)
-    except Exception:
-        # Most commonly: the Tesseract binary isn't installed on this machine,
-        # or PIL/pytesseract aren't importable. We swallow the error here and
-        # let extract_text_from_pdf's caller decide what to do with an empty
-        # page rather than crashing the request.
+        img_bytes = pix.tobytes("png")
+
+        # Load image and convert to numpy array for EasyOCR
+        img = Image.open(io.BytesIO(img_bytes))
+        img_np = np.array(img)
+
+        # Run EasyOCR
+        reader = _get_easyocr_reader()
+        # detail=0 returns a list of recognized text strings
+        text_list = reader.readtext(img_np, detail=0)
+        return " ".join(text_list)
+    except Exception as e:
+        # We swallow the error and print it to stdout for debugging,
+        # letting the caller handle empty text gracefully.
+        print(f"EasyOCR error: {e}")
         return ""
 
 
