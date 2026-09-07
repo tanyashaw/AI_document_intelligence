@@ -1,10 +1,8 @@
 """
-Extracts ALL 8 requirement categories from one batch of document text
-in a SINGLE LLM call.
+Extracts all requirement categories from one document batch.
 
-The extraction uses Groq Structured Outputs with GPT-OSS so that the
-model is required to return the exact JSON structure expected by the
-rest of the application.
+The extraction is performed in a single Groq call using GPT-OSS
+structured JSON output.
 
 Categories:
     1. project_scope
@@ -22,7 +20,7 @@ from app.utils.json_parser import parse_llm_json
 
 
 # ----------------------------------------------------------------------
-# Default result shape.
+# Empty result used when a batch cannot be processed.
 # ----------------------------------------------------------------------
 
 _RESULT_SHAPE = {
@@ -38,15 +36,25 @@ _RESULT_SHAPE = {
 
 
 # ----------------------------------------------------------------------
-# Strict structured-output schema.
+# Strict schema.
 #
-# Every property is required because Groq Structured Outputs with
-# strict=True expects the schema to be explicit.
+# IMPORTANT:
+# Keep the schema simple.
+#
+# We do NOT use enums for category/severity/type because a single
+# unexpected classification should never cause Groq to reject an
+# otherwise useful extraction.
 # ----------------------------------------------------------------------
 
 EXTRACTION_SCHEMA = {
     "type": "object",
+
     "properties": {
+
+        # --------------------------------------------------------------
+        # PROJECT SCOPE
+        # --------------------------------------------------------------
+
         "project_scope": {
             "type": "array",
             "items": {
@@ -70,6 +78,10 @@ EXTRACTION_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+
+        # --------------------------------------------------------------
+        # DEADLINES
+        # --------------------------------------------------------------
 
         "deadlines": {
             "type": "array",
@@ -99,6 +111,10 @@ EXTRACTION_SCHEMA = {
             },
         },
 
+        # --------------------------------------------------------------
+        # STAFFING
+        # --------------------------------------------------------------
+
         "staffing_requirements": {
             "type": "array",
             "items": {
@@ -127,6 +143,10 @@ EXTRACTION_SCHEMA = {
             },
         },
 
+        # --------------------------------------------------------------
+        # COMPLIANCE
+        # --------------------------------------------------------------
+
         "compliance_requirements": {
             "type": "array",
             "items": {
@@ -135,30 +155,29 @@ EXTRACTION_SCHEMA = {
                     "requirement": {
                         "type": "string",
                     },
+
+                    # Deliberately a string rather than enum.
+                    #
+                    # This prevents the whole batch from failing if
+                    # the model uses "Compliance", "Security",
+                    # "Privacy", etc.
                     "category": {
                         "type": "string",
-                        "enum": [
-                            "Certification",
-                            "Legal",
-                            "Regulatory",
-                            "Insurance",
-                            "Financial",
-                            "Technical",
-                            "Submission",
-                            "Eligibility",
-                            "Other",
-                        ],
                     },
+
                     "page_ref": {
                         "type": "string",
                     },
+
                     "mandatory": {
                         "type": "boolean",
                     },
+
                     "evidence": {
                         "type": "string",
                     },
                 },
+
                 "required": [
                     "requirement",
                     "category",
@@ -166,9 +185,14 @@ EXTRACTION_SCHEMA = {
                     "mandatory",
                     "evidence",
                 ],
+
                 "additionalProperties": False,
             },
         },
+
+        # --------------------------------------------------------------
+        # DELIVERABLES
+        # --------------------------------------------------------------
 
         "deliverables": {
             "type": "array",
@@ -194,6 +218,10 @@ EXTRACTION_SCHEMA = {
             },
         },
 
+        # --------------------------------------------------------------
+        # TECHNICAL REQUIREMENTS
+        # --------------------------------------------------------------
+
         "technical_requirements": {
             "type": "array",
             "items": {
@@ -217,6 +245,10 @@ EXTRACTION_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+
+        # --------------------------------------------------------------
+        # COMMERCIAL REQUIREMENTS
+        # --------------------------------------------------------------
 
         "commercial_requirements": {
             "type": "array",
@@ -242,49 +274,44 @@ EXTRACTION_SCHEMA = {
             },
         },
 
+        # --------------------------------------------------------------
+        # RISKS
+        # --------------------------------------------------------------
+
         "risks": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
+
                     "risk": {
                         "type": "string",
                     },
+
+                    # String instead of enum.
                     "severity": {
                         "type": "string",
-                        "enum": [
-                            "High",
-                            "Medium",
-                            "Low",
-                        ],
                     },
+
+                    # String instead of enum.
                     "type": {
                         "type": "string",
-                        "enum": [
-                            "Schedule",
-                            "Technical",
-                            "Financial",
-                            "Compliance",
-                            "Resource",
-                            "Scope",
-                            "Legal",
-                            "Other",
-                        ],
                     },
+
+                    # Explicit / Inferred.
                     "source": {
                         "type": "string",
-                        "enum": [
-                            "Explicit",
-                            "Inferred",
-                        ],
                     },
+
                     "page_ref": {
                         "type": "string",
                     },
+
                     "evidence": {
                         "type": "string",
                     },
                 },
+
                 "required": [
                     "risk",
                     "severity",
@@ -293,11 +320,15 @@ EXTRACTION_SCHEMA = {
                     "page_ref",
                     "evidence",
                 ],
+
                 "additionalProperties": False,
             },
         },
     },
 
+    # All eight top-level fields are required.
+    #
+    # The model MUST return empty arrays when a category has nothing.
     "required": [
         "project_scope",
         "deadlines",
@@ -315,293 +346,348 @@ EXTRACTION_SCHEMA = {
 
 def extract_all_fields(text: str) -> dict:
     """
-    Extract every category from ONE batch of document text.
+    Extract all eight requirement categories from one document batch.
 
-    Returns a dictionary containing all 8 categories.
-
-    If the model call fails, the batch is skipped instead of crashing
-    the entire document analysis.
+    The function intentionally returns an empty result for a failed
+    batch rather than crashing the entire document-processing pipeline.
     """
 
     prompt = f"""
-You are an expert document analyst.
+You are an expert document-intelligence extraction system.
 
-Read the DOCUMENT EXCERPT below and extract every relevant item for
-EACH of these 8 categories.
+Analyze ONLY the DOCUMENT EXCERPT provided below.
 
-If a category has nothing relevant in this excerpt, return an empty
-list for that category.
+Extract information into exactly these 8 categories:
 
-Do NOT guess or invent information.
+1. project_scope
+2. deadlines
+3. staffing_requirements
+4. compliance_requirements
+5. deliverables
+6. technical_requirements
+7. commercial_requirements
+8. risks
 
-============================================================
-GROUNDING RULE
-============================================================
-
-Every extracted item MUST contain an "evidence" field.
-
-The evidence must be a short direct quote copied from the
-DOCUMENT EXCERPT that actually supports the extracted item.
-
-Maximum evidence length: 20 words.
-
-If you cannot find real text supporting an item:
-
-DO NOT INCLUDE THE ITEM.
-
-Do not invent evidence.
+If a category has no relevant information in this excerpt,
+return an EMPTY ARRAY for that category.
 
 ============================================================
-NO DUPLICATE GRANULARITY
+IMPORTANT: DO NOT MIX CATEGORIES
 ============================================================
 
-If the same requirement appears both as:
+PROJECT SCOPE
+--------------
 
-1. a generic/summary statement
+Use project_scope ONLY for the actual high-level work or purpose
+of the project.
 
-and
+Examples:
 
-2. specific itemized details,
+GOOD:
+- Implement an enterprise document management platform
+- Migrate legacy documents
+- Configure document workflows
+- Provide implementation and support services
 
-extract only the specific itemized details.
+DO NOT put individual technical specifications here.
 
-For example:
+For example, these belong in technical_requirements:
 
-Generic:
-"Minimum Insurance Requirements"
+- TLS 1.2
+- SAML 2.0
+- REST API
+- OCR accuracy
+- browser compatibility
+- search response time
+- horizontal scaling
 
-Specific:
-"Commercial General Liability: $2 million per occurrence"
+------------------------------------------------------------
 
-Do NOT create an item for the generic heading if the specific
-requirement is already being extracted.
+DEADLINES
+---------
 
-============================================================
-1. PROJECT SCOPE
-============================================================
+Use deadlines ONLY for dates or explicitly stated time periods.
 
-Extract the work, goods, services, or activities being requested
-or covered.
+Examples:
 
-Fields:
+- Proposal submission deadline
+- Contract award
+- Project kickoff
+- Design completion
+- Go-live
+- Warranty period
+- Implementation duration
 
-- item
-- page_ref
-- evidence
+Do not put general requirements here.
 
-============================================================
-2. DEADLINES
-============================================================
+------------------------------------------------------------
 
-Extract explicitly named:
+STAFFING REQUIREMENTS
+---------------------
 
-- submission deadlines
-- Q&A deadlines
-- milestones
-- award dates
-- contract start/end dates
-- validity periods
-- implementation dates
-- other explicitly named dates or timeframes
+Use staffing_requirements ONLY when the document specifies:
 
-Fields:
-
-- event
-- date
-- page_ref
-- evidence
-
-Rules:
-
-- Only include a milestone if it is explicitly named.
-- Do not infer a deadline.
-- If the milestone is explicitly named but its date is not given,
-  use "Not specified" for date.
-- Do not use "N/A" for an unnamed date.
-
-============================================================
-3. STAFFING REQUIREMENTS
-============================================================
-
-Extract:
-
-- required roles
-- required headcount
-- qualifications
-- certifications
+- roles
+- personnel
+- headcount
 - experience
-- key personnel
-- team structure
+- qualifications
+- allocation
+- certifications of personnel
 
-Fields:
+------------------------------------------------------------
 
-- role
-- details
-- page_ref
-- evidence
+COMPLIANCE REQUIREMENTS
+-----------------------
 
-============================================================
-4. COMPLIANCE REQUIREMENTS
-============================================================
+Use compliance_requirements for requirements that a vendor,
+contractor, bidder, or solution MUST satisfy.
 
-Extract:
+Examples:
 
 - legal requirements
 - regulatory requirements
 - certifications
-- eligibility
-- submission requirements
 - insurance
-- financial requirements
-- required standards
+- eligibility
+- security/privacy obligations
+- submission requirements
+- mandatory declarations
+- data protection requirements
 
-Fields:
+The category field is a SHORT LABEL such as:
 
-- requirement
-- category
-- page_ref
-- mandatory
-- evidence
-
-The category MUST be exactly one of:
-
-- Certification
 - Legal
 - Regulatory
+- Certification
 - Insurance
 - Financial
 - Technical
+- Security
+- Privacy
 - Submission
 - Eligibility
+- Compliance
 - Other
 
+Do NOT worry about forcing the label into a predefined list.
+
+------------------------------------------------------------
+
+DELIVERABLES
+------------
+
+Use deliverables ONLY for actual outputs/artifacts that the
+vendor must produce or hand over.
+
 Examples:
 
-Certification:
-licenses, qualifications, training, professional certifications
+- requirements validation report
+- architecture document
+- migration plan
+- test report
+- training materials
+- operations handbook
+- final implementation report
 
-Legal:
-contract law terms, indemnification, liability clauses
+IMPORTANT:
 
-Regulatory:
-government or industry regulations/codes
+A technical capability is NOT automatically a deliverable.
 
-Insurance:
-required coverage types and minimum amounts
+For example:
 
-Financial:
-bonding, financial statements, minimum revenue
+"System shall support SAML 2.0"
 
-Technical:
-required technical standards/specifications
+belongs in technical_requirements.
 
-Submission:
-forms, formatting, submission procedure, document sequence
+It should NOT be a deliverable.
 
-Eligibility:
-who is allowed to bid or participate
+------------------------------------------------------------
 
-Other:
-anything that genuinely does not fit above
+TECHNICAL REQUIREMENTS
+----------------------
 
-============================================================
-5. DELIVERABLES
-============================================================
+Use technical_requirements for technical/system capabilities.
 
-Extract specific outputs, products, reports, services, or artifacts
-that must be produced or handed over.
+Examples:
 
-Fields:
-
-- item
-- page_ref
-- evidence
-
-============================================================
-6. TECHNICAL REQUIREMENTS
-============================================================
-
-Extract:
-
-- technologies
-- systems
-- platforms
-- technical capabilities
-- standards
-- methodologies
+- SAML 2.0
+- OpenID Connect
+- REST API
+- TLS
+- encryption
+- OCR
+- AI classification
+- search performance
+- browser support
+- backup/restore
+- scalability
+- audit logging
 - integrations
-- performance requirements
-- security requirements
+- architecture requirements
 
-Fields:
+------------------------------------------------------------
 
-- item
-- page_ref
-- evidence
+COMMERCIAL REQUIREMENTS
+-----------------------
 
-============================================================
-7. COMMERCIAL REQUIREMENTS
-============================================================
+Use commercial_requirements for money, contract, or business terms.
 
-Extract:
+Examples:
 
 - pricing
-- payment terms
+- payment schedule
 - budget
+- contract value
 - contract duration
 - warranty
-- guarantees
-- bonds
 - penalties
-- commercial financial conditions
-- other contract/commercial terms
+- service credits
+- bonds
+- guarantees
+- commercial negotiation
+- recurring fees
+- licensing
 
-Fields:
+IMPORTANT:
 
-- item
-- page_ref
-- evidence
+Contract duration belongs here when discussing the commercial
+contract term.
 
-============================================================
-8. RISKS
-============================================================
+A project milestone such as "go-live on 3 May 2027" belongs
+in deadlines.
 
-Extract:
+------------------------------------------------------------
 
-A. Risks explicitly stated in the document.
+RISKS
+------
 
-B. Reasonable risks that can be inferred directly from the
-document excerpt.
+Extract risks only when they are:
+
+A. explicitly identified in the document
+
+OR
+
+B. reasonably inferable from a specific statement in the document.
 
 Examples:
 
-- tight timelines
-- complex technical scope
+- tight implementation schedule
+- dependency on third-party systems
+- migration complexity
 - regulatory exposure
-- penalties
-- resource constraints
-- ambiguous requirements
-- large implementation scope
+- performance constraints
+- strict submission requirements
+- financial exposure
 
-Fields:
+For each risk provide:
 
-- risk
-- severity: High | Medium | Low
-- type: Schedule | Technical | Financial | Compliance |
-        Resource | Scope | Legal | Other
-- source: Explicit | Inferred
-- page_ref
-- evidence
+severity:
+- High
+- Medium
+- Low
 
-For inferred risks:
+type:
+- Schedule
+- Technical
+- Financial
+- Compliance
+- Resource
+- Scope
+- Legal
+- Other
 
-- page_ref should be "N/A" unless the page is explicitly known
-- evidence must quote the text that caused the inference
+source:
+- Explicit
+- Inferred
 
-Do not invent risks without a reasonable basis in the excerpt.
+These are labels, not strict values. Use the closest sensible label.
 
 ============================================================
-IMPORTANT OUTPUT RULE
+EVIDENCE REQUIREMENT
+============================================================
+
+EVERY extracted item MUST contain an evidence field.
+
+Evidence must be a SHORT DIRECT QUOTE from the document excerpt.
+
+Maximum approximately 20 words.
+
+Example:
+
+item:
+"Support SSO using SAML 2.0 or OpenID Connect"
+
+evidence:
+"Support SSO using SAML 2.0 or OpenID Connect"
+
+Do not invent evidence.
+
+If you cannot find supporting text, DO NOT extract the item.
+
+============================================================
+PAGE REFERENCES
+============================================================
+
+Use the page reference that appears in the document excerpt.
+
+Examples:
+
+"Page 5"
+"PAGE 5"
+
+If a page cannot be determined from the excerpt:
+
+"N/A"
+
+Do not invent page numbers.
+
+============================================================
+IMPORTANT: EMPTY CATEGORIES
+============================================================
+
+You MUST return ALL eight top-level fields.
+
+If there is nothing relevant for a category, return:
+
+[]
+
+Never omit a top-level field.
+
+For example, if there are no risks:
+
+"risks": []
+
+If there are no commercial requirements:
+
+"commercial_requirements": []
+
+============================================================
+NO INVENTION
+============================================================
+
+Use only information supported by the document excerpt.
+
+Do not invent:
+
+- dates
+- prices
+- people
+- roles
+- requirements
+- technical specifications
+- risks
+
+============================================================
+NO DUPLICATE HEADINGS
+============================================================
+
+Do not extract generic section headings as requirements.
+
+Prefer the specific requirement underneath a heading.
+
+============================================================
+OUTPUT
 ============================================================
 
 Return ONLY the structured JSON object.
@@ -612,9 +698,9 @@ Do not return:
 - explanations
 - headings
 - comments
-- ```json fences
-- text before the JSON
-- text after the JSON
+- code fences
+- text before JSON
+- text after JSON
 
 DOCUMENT EXCERPT:
 
@@ -622,25 +708,25 @@ DOCUMENT EXCERPT:
 """
 
     try:
+
         response = client.chat.completions.create(
             model=GROQ_MODEL,
+
             messages=[
                 {
                     "role": "user",
                     "content": prompt,
                 }
             ],
+
             temperature=0,
 
-            # Larger than the summary/classifier because this response
-            # contains up to 8 categories with multiple fields.
-            max_tokens=2500,
+            # This is intentionally reasonably large because this
+            # agent can return many extracted records.
+            max_tokens=3000,
 
-            # GPT-OSS reasoning is useful for extraction, but we don't
-            # need maximum reasoning depth for every batch.
             reasoning_effort="low",
 
-            # Force the response to match EXTRACTION_SCHEMA.
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -663,14 +749,22 @@ DOCUMENT EXCERPT:
         if not isinstance(parsed, dict):
             print(
                 "[combined_extraction_agent] "
-                "Structured response was not a dictionary."
+                "Model response was not a dictionary."
             )
+
             return dict(_RESULT_SHAPE)
 
-        # Make sure every expected category exists.
+        # --------------------------------------------------------------
+        # Normalize the response.
+        #
+        # Even though Structured Outputs should provide all fields,
+        # this protects the rest of the application.
+        # --------------------------------------------------------------
+
         result = {}
 
         for key in _RESULT_SHAPE:
+
             value = parsed.get(key, [])
 
             if not isinstance(value, list):
@@ -681,9 +775,10 @@ DOCUMENT EXCERPT:
         return result
 
     except Exception as e:
+
         print(
             "[combined_extraction_agent] "
-            f"failed on a batch, skipping just that batch: {e}"
+            f"Batch extraction failed: {e}"
         )
 
         return dict(_RESULT_SHAPE)
