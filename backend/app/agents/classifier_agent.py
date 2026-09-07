@@ -3,69 +3,156 @@ from app.utils.json_parser import parse_llm_json
 
 
 DOCUMENT_TYPES = [
-    "RFP",      # Request for Proposal
-    "RFQ",      # Request for Quotation
-    "RFI",      # Request for Information
-    "ITB",      # Invitation to Bid
-    "SOW",      # Statement of Work
+    "RFP",
+    "RFQ",
+    "RFI",
+    "ITB",
+    "SOW",
     "Contract",
     "NDA",
     "Proposal",
     "Policy Document",
     "Report",
-    "Other"
+    "Other",
 ]
 
 
-def classifier_agent(state):
+# Strict structured-output schema.
+#
+# This prevents GPT-OSS from returning explanatory text around the JSON.
+CLASSIFIER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "document_type": {
+            "type": "string",
+            "enum": DOCUMENT_TYPES,
+        },
+        "document_type_label": {
+            "type": "string",
+        },
+        "confidence": {
+            "type": "string",
+            "enum": ["High", "Medium", "Low"],
+        },
+        "reasoning": {
+            "type": "string",
+        },
+    },
+    "required": [
+        "document_type",
+        "document_type_label",
+        "confidence",
+        "reasoning",
+    ],
+    "additionalProperties": False,
+}
 
-    # Document type is almost always evident from the opening of the doc;
-    # no need to burn tokens sending the whole thing to this call.
+
+def classifier_agent(state):
+    """
+    Classify the document using the first ~2000 characters.
+
+    The classifier only needs the opening portion because document
+    type is usually identifiable from the title, introduction,
+    purpose, issuer, and initial instructions.
+    """
+
     text = state["text"][:2000]
 
     prompt = f"""
-    You are a document classification expert.
+You are an expert document classification system.
 
-    Identify what TYPE of document the text below is.
+Identify the single best document type for the document below.
 
-    Choose the single best match from this list:
-    {", ".join(DOCUMENT_TYPES)}
+Choose EXACTLY ONE value from:
 
-    If it doesn't clearly match a procurement/business document type,
-    classify it as "Other" and describe what it actually is in
-    "document_type_label".
+{", ".join(DOCUMENT_TYPES)}
 
-    Return ONLY valid JSON in this exact format:
-    {{
-        "document_type": "<one value from the list above>",
-        "document_type_label": "<short human-readable label, e.g. 'Request for Proposal (RFP)'>",
-        "confidence": "<High | Medium | Low>",
-        "reasoning": "<one short sentence explaining why>"
-    }}
+Classification rules:
 
-    DOCUMENT:
-    {text}
-    """
+- RFP = Request for Proposal
+- RFQ = Request for Quotation
+- RFI = Request for Information
+- ITB = Invitation to Bid
+- SOW = Statement of Work
+- Contract = legally binding agreement
+- NDA = Non-Disclosure Agreement
+- Proposal = a submitted/proposed solution or business proposal
+- Policy Document = organizational rules, policies, or procedures
+- Report = analytical, informational, status, research, or assessment report
+- Other = anything that does not clearly fit the categories above
 
-    response = client.chat.completions.create(
+If you choose "Other", explain what kind of document it actually is
+in document_type_label.
 
-        model=GROQ_MODEL,
+Do not invent information.
 
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
+Keep the reasoning to one short sentence.
+
+DOCUMENT:
+{text}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            temperature=0,
+            max_tokens=500,
+            reasoning_effort="low",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "document_classifier",
+                    "schema": CLASSIFIER_SCHEMA,
+                    "strict": True,
+                },
+            },
+        )
+
+        content = response.choices[0].message.content
+
+        print(
+            "[classifier_agent] RAW LLM RESPONSE:"
+        )
+        print(repr(content))
+
+        parsed = parse_llm_json(content)
+
+        if (
+            not isinstance(parsed, dict)
+            or "document_type" not in parsed
+        ):
+            print(
+                "[classifier_agent] Structured response was invalid."
+            )
+
+            parsed = {
+                "document_type": "Other",
+                "document_type_label": "Unknown document",
+                "confidence": "Low",
+                "reasoning": "The model did not return a valid classification.",
             }
-        ],
 
-        temperature=0,
-        max_tokens=150,  # this response is a small fixed-shape JSON object
-    )
+        state["document_type"] = parsed
 
-    content = response.choices[0].message.content
+        return state
 
-    parsed = parse_llm_json(content)
+    except Exception as e:
+        print(
+            f"[classifier_agent] Classification failed: {e}"
+        )
 
-    state["document_type"] = parsed
+        state["document_type"] = {
+            "document_type": "Other",
+            "document_type_label": "Unknown document",
+            "confidence": "Low",
+            "reasoning": "Classification failed.",
+        }
 
-    return state
+        return state
