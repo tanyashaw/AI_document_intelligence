@@ -42,7 +42,8 @@ DOCUMENT:
 
     content = _call_llm(prompt, max_tokens=700)
     parsed = parse_llm_json(content)
-
+    print("[summary_agent] RAW LLM RESPONSE:")
+    print(repr(content))
     # If JSON parse failed, retry once with an even simpler prompt
     if "error" in parsed:
         print("[summary_agent] Primary parse failed, retrying with simpler prompt")
@@ -57,7 +58,8 @@ DOCUMENT:
 {text[:3000]}"""
         content2 = _call_llm(simple_prompt, max_tokens=500)
         parsed = parse_llm_json(content2)
-
+        print("[summary_agent] RAW RETRY RESPONSE:")
+        print(repr(content2))
     # Last-resort fallback: build a minimal summary from the text itself
     if "error" in parsed or not isinstance(parsed, dict):
         print("[summary_agent] Both attempts failed — using text fallback")
